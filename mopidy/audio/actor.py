@@ -396,6 +396,7 @@ class _Handler:
 
         if self._audio._pending_metadata:
             self._audio._playbin.send_event(self._audio._pending_metadata)
+            self._audio._send_tag_event_to_sink(self._audio._pending_metadata)
             self._audio._pending_metadata = None
 
     def on_segment(self, segment):
@@ -444,6 +445,7 @@ class Audio(pykka.ThreadingActor):
         self._playbin = None
         self._outputs = None
         self._queue = None
+        self._audio_sink = None
         self._about_to_finish_callback = None
         self._source_setup_callback = None
 
@@ -544,6 +546,7 @@ class Audio(pykka.ThreadingActor):
         audio_sink.add_pad(ghost_pad)
 
         self._playbin.set_property("audio-sink", audio_sink)
+        self._audio_sink = audio_sink
         self._queue = queue
 
     def _teardown_mixer(self):
@@ -872,6 +875,24 @@ class Audio(pykka.ThreadingActor):
             self._pending_metadata = event
         else:
             self._playbin.send_event(event)
+
+        # GstPlayBin swallows tag events: it collects them for its own use
+        # and never forwards them to the audio sink.  Send the event into the
+        # sink as well, where it ends up in the stream (e.g. as Shoutcast
+        # metadata, so Icecast shows the current track title).
+        self._send_tag_event_to_sink(event)
+
+    def _send_tag_event_to_sink(self, event):
+        """Push a tag event into the audio sink.
+
+        The event has to be sent to the sink *pad*: a GstBin does not forward
+        events to its sink pads on its own.
+        """
+        if self._audio_sink is None:
+            return
+        sink_pad = self._audio_sink.get_static_pad("sink")
+        if sink_pad is not None:
+            sink_pad.send_event(event)
 
     def get_current_tags(self):
         """
